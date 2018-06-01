@@ -1,0 +1,34 @@
+{
+  "name": "wooper",
+  "version": "1.0.0",
+  "description": "I am a woopy wooper.",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "node src/main.js",
+    "test": "standard ./ && node test/main.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ossman11/wooper.git"
+  },
+  "keywords": [
+    "woop",
+    "woopwoopworld"
+  ],
+  "author": "ossman11",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/ossman11/wooper/issues"
+  },
+  "homepage": "https://github.com/ossman11/wooper#readme",
+  "devDependencies": {
+    "standard": "^11.0.1"
+  },
+  "dependencies": {
+    "discord.js": "^11.3.2",
+    "erlpack": "github:discordapp/erlpack",
+    "libsodium-wrappers": "^0.7.3",
+    "uws": "^10.148.0",
+    "zlib-sync": "^0.1.4"
+  }
+}
