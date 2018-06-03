@@ -5,8 +5,12 @@ const configuration = require('../wooper.json')
 const Discord = require('discord.js')
 const client = new Discord.Client()
 
+const Playlist = require('./lib/playlist.js')
+
 const fetchFunction = function (msg) {
-  var fnc = require('./' + msg.channel.type)
+  try {
+    var fnc = require('./commands/' + msg.channel.type)
+  } catch (e) { return } // Ignore commands that are unknown
   var name = /!([^ ]*)/.exec(msg.content)
   name = name && name[1]
   if (name && fnc[name] && typeof fnc[name] === 'function') {
@@ -17,6 +21,13 @@ const fetchFunction = function (msg) {
 client.on('ready', () => {
   console.log(`Logged in as ${client.user.tag}!`)
   console.log(`Can be invited using this url: https://discordapp.com/oauth2/authorize?client_id=${client.user.id}&scope=bot`)
+  if (configuration.guild && typeof configuration.guild === 'string') {
+    var defaultPlaylist = new Playlist(client, configuration.guild)
+    defaultPlaylist.init()
+      .then(() => {
+        console.log('Started playlist')
+      })
+  }
 })
 
 client.on('message', msg => {
@@ -26,4 +37,12 @@ client.on('message', msg => {
   fetchFunction(msg)
 })
 
-client.login(configuration.token)
+client.on('error', err => {
+  console.error(err)
+})
+
+// Login and logout user to ensure that the connection is reset
+const tmpClient = new Discord.Client()
+tmpClient.login(configuration.token)
+  .then(() => tmpClient.destroy())
+  .then(() => client.login(configuration.token))
