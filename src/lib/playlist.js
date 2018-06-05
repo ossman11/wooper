@@ -213,13 +213,16 @@ Pl.prototype.playlist = function (name, srcmsg) {
       })
   }
   this._lists[name] = this._lists[name] || {
+    name: name,
     order: entries,
     msg: srcmsg ? this.editPlaylistMsg(srcmsg) : this._channel.send(['list: ' + name].concat(entries))
   }
 
+  /*
   if (srcmsg && srcmsg.pinned) {
     this.start(name)
   }
+  */
 
   return this._lists[name]
 }
@@ -289,11 +292,18 @@ Pl.prototype.join = function (targetChannel) {
     })
 }
 
+Pl.prototype.leave = function () {
+  var currentChannel = this._client.voiceConnections.first()
+  if (!currentChannel) { return Promise.resolve() }
+  return currentChannel.disconnect()
+}
+
 Pl.prototype.start = function (listName) {
-  var list = this.playlist(listName)
+  var list = listName ? this.playlist(listName) : this._currentList
   var prom = Promise.resolve()
   if (this._currentList !== list) {
     prom = this.stop()
+      /* Disable pinning playlists as this creates notifications
       .then(() => {
         if (
           this._currentList &&
@@ -304,6 +314,7 @@ Pl.prototype.start = function (listName) {
             .then(msg => msg.unpin())
         }
       })
+      */
       .then(() => {
         this._currentList = list
         this._currentEntry = 0
@@ -313,7 +324,7 @@ Pl.prototype.start = function (listName) {
         var entries = msg.content.split('\n')
         entries.shift()
         this._order = entries
-        msg.pin()
+        // return msg.pin()
       })
   }
 
@@ -346,19 +357,27 @@ Pl.prototype.start = function (listName) {
           delete entry.prom
           this.next()
         })
+
+        return this._client.user.setPresence({
+          game: {
+            name: 'playlist ' + list.name,
+            type: 0,
+            url: entry.src
+          }
+        })
       }.bind(this)
 
       if (
         entry.stream &&
         typeof entry.stream.then === 'function'
       ) {
-        entry.stream
+        return entry.stream
           .then((stream) => {
             entry.stream = stream
-            fnPlay()
+            return fnPlay()
           })
       } else {
-        fnPlay()
+        return fnPlay()
       }
     })
 }
@@ -449,7 +468,7 @@ Pl.prototype.joinCmd = function (msg) {
 
 Pl.prototype.leaveCmd = function (msg) {
   console.log(`Called "leave" command by ${msg.author.username}`)
-  this.reply(msg, 'This functionality is not yet available.')
+  this.leave()
 }
 
 module.exports = Pl
