@@ -1,5 +1,6 @@
 'use strict'
 
+// const spot = require('./spotify.js')
 const ytdl = require('ytdl-core')
 const parse = require('./parse.js')
 
@@ -21,8 +22,12 @@ var Pl = function (client, guild, channel) {
   }
   this._channelName = channel || 'woop'
 
+  this._currentList = ''
+  this._currentEntry = 0
+  this._services = {}
   this._entries = {}
   this._order = []
+  this._lists = {}
 }
 
 Pl.prototype.init = function () {
@@ -34,7 +39,8 @@ Pl.prototype.init = function () {
   if (!channelWoop) {
     channelPromise = this._guild.createChannel(this._channelName, 'text')
   }
-  this._initPromise = channelPromise
+  this._initPromise = this.prepareServices()
+    .then(() => channelPromise)
     .then(channel => {
       this._channel = channel
       this._client.on('message', this.handleMessage.bind(this))
@@ -42,12 +48,34 @@ Pl.prototype.init = function () {
     })
     .then(messages => {
       messages.forEach(m => {
-        if (m.author !== this._client.user) { m.delete() }
-        this.add(m.content)
+        if (m.author !== this._client.user) {
+          if (m.deletable) {
+            return m.delete()
+          }
+        }
+        this.playlist(m.content, m)
       })
     })
 
   return this._initPromise
+}
+
+Pl.prototype.prepareServices = function () {
+  this._services = {}
+  return Promise.resolve()
+    // Setup youtube
+    .then(() => {
+      this._services.youtube = {
+        create: function (src) {
+          return ytdl(src, { filter: 'audioonly' })
+        }
+      }
+    })
+  /*
+  // Setup spotify
+  .then(() => spot.create(this._client.__woop__.cred.spotify))
+  .then(spot => { this._services.spotify = spot })
+  */
 }
 
 Pl.prototype.handleMessage = function (msg) {
@@ -75,6 +103,11 @@ const checks = [
     type: 'youtube',
     extract: /https?:\/\/youtu\.be\/([^?&\s]*)/,
     src: 'https://youtu.be/{id}'
+  },
+  {
+    type: 'spotify',
+    extract: /spotify:track:(.*)/,
+    src: 'spotify:track:{id}'
   }
 ]
 Pl.prototype.validateUrl = function (src) {
@@ -109,11 +142,8 @@ Pl.prototype.parseUrl = function (src) {
     entry.reject = reject
   })
 
-  switch (entry.type) {
-    case 'youtube':
-      entry.stream = ytdl(entry.src, { filter: 'audioonly' })
-      break
-    default: return
+  if (this._services[entry.type]) {
+    entry.stream = this._services[entry.type].create(entry.src)
   }
 
   return entry
@@ -124,101 +154,209 @@ Pl.prototype.reply = function (msg, content) {
     .then(c => c.send(content))
 }
 
-Pl.prototype.add = function (url) {
+var extractPlaylistName = /list: (.*)/
+Pl.prototype.editPlaylistMsg = function (msg, entries) {
+  var name = msg.content
+  if (extractPlaylistName.test(name)) {
+    name = extractPlaylistName.exec(name.split('\n').shift())[1]
+  }
+  if (!entries) {
+    entries = msg.content.split('\n')
+  }
+  var map = {}
+  for (var i = 0; i < entries.length; i++) {
+    var cur = entries[i]
+    if (extractPlaylistName.test(cur)) { continue }
+    map[cur] = true
+  }
+  var newContent = ['list: ' + name].concat(Object.keys(map)).join('\n')
+
+  if (msg.content !== newContent) {
+    return msg.edit(newContent)
+      .then(() => {
+        if (this._lists[name] === this._currentList) {
+          var entry = this.parseUrl(this._order[this._currentEntry])
+          var entries = newContent.split('\n')
+          entries.shift()
+
+          if (entry) {
+            this._currentEntry = entries.indexOf(entry.src)
+          } else {
+            this._currentEntry = 0
+          }
+
+          this._order = entries
+        }
+      })
+  }
+  return Promise.resolve(msg)
+}
+
+Pl.prototype.playlist = function (name, srcmsg) {
+  var entries = []
+  if (extractPlaylistName.test(name)) {
+    entries = name.split('\n')
+    name = extractPlaylistName.exec(entries.shift())[1]
+  }
+  name = name || 'woop'
+  name = name.toLowerCase()
+
+  if (this._lists[name] && srcmsg) {
+    this._lists[name].msg = this._lists[name].msg
+      .then(msg => {
+        if (srcmsg.deletable) {
+          srcmsg.delete()
+        }
+        return this.editPlaylistMsg(msg, msg.content.split('\n').concat(entries))
+      })
+  }
+  this._lists[name] = this._lists[name] || {
+    order: entries,
+    msg: srcmsg ? this.editPlaylistMsg(srcmsg) : this._channel.send(['list: ' + name].concat(entries))
+  }
+  return this._lists[name]
+}
+
+Pl.prototype.add = function (url, listName) {
   var entry = this.parseUrl(url)
   if (!entry) { return }
-  return this._channel.fetchMessages()
-    .then(msgs => {
-      var msg = msgs.find(m => m.content === entry.src && m.author === this._client.user)
-      if (!msg) {
-        return this._channel.send(entry.src)
-      }
-      return msg
-    })
+  var list = this.playlist(listName)
+  return list.msg
     .then(msg => {
-      entry.msg = msg
-      if (this._order.indexOf(entry) < 0) {
-        this._order.push(entry)
+      var cont = msg.content.split('\n')
+      if (cont.indexOf(entry.src) < 0) {
+        cont.push(entry.src)
+        return this.editPlaylistMsg(msg, cont)
       }
     })
 }
 
-Pl.prototype.remove = function (url) {
+Pl.prototype.remove = function (url, listName) {
   var entry = this.parseUrl(url)
   if (!entry) { return }
-  if (entry.msg) {
-    entry.msg.delete()
-    delete entry.msg
-  }
-  while (this._order.indexOf(entry) > -1) {
-    var i = this._order.indexOf(entry)
-    this._order.splice(i, 1)
-  }
-  if (entry.player) {
-    entry.player.end()
-  }
-  return entry.prom
+
+  var list = this.playlist(listName)
+  return list.msg
+    .then(msg => {
+      var entries = msg.content.split('\n')
+      var i = entries.indexOf(entry.src)
+      if (i > -1) {
+        entries.splice(i, 1)
+        this.editPlaylistMsg(msg, entries)
+      }
+    })
+    .then(() => this.stop(entry))
 }
 
 Pl.prototype.next = function () {
-  if (this.nexting) { return }
-  var entry = this._order[0]
+  if (this.stopping) { return }
+  var entry = this.parseUrl(this._order[this._currentEntry])
   if (!entry) { return }
 
-  this.nexting = true
-
-  this.remove(entry.src)
-  entry.prom.then(() => {
-    this.nexting = false
-    if (this.playing) {
-      this.start()
-    }
-  })
+  this.stop(entry)
+    .then(() => {
+      this._currentEntry++
+      if (this._currentEntry >= this._order.length) {
+        this._currentEntry = 0
+      }
+      if (this.playing) {
+        this.start()
+      }
+    })
 }
 
 Pl.prototype.join = function (targetChannel) {
-  var channel = this._guild.channels.find(c => c.name.toLowerCase() === targetChannel)
+  var channel = this._guild.channels.find(c => c.name.toLowerCase() === targetChannel && c.type === 'voice')
   if (!channel || channel.type !== 'voice') { return }
   channel.join()
     .then(con => {
       this._connection = con
-      if (this.playing) { this.start() }
+      this.start()
     })
     .catch(e => {
       console.error(e)
     })
 }
 
-Pl.prototype.start = function () {
-  var entry = this._order[0]
-  if (!entry || !this._connection) { return }
-
-  this.playing = true
-
-  if (entry.player) {
-    if (entry.player.paused) {
-      return entry.player.resume()
-    }
+Pl.prototype.start = function (listName) {
+  var list = this.playlist(listName)
+  var prom = Promise.resolve()
+  if (this._currentList !== list) {
+    prom = this.stop()
+      .then(() => {
+        this._currentList = list
+        this._currentEntry = 0
+        return list.msg
+      })
+      .then(msg => {
+        var entries = msg.content.split('\n')
+        entries.shift()
+        this._order = entries
+      })
   }
 
-  if (!entry.stream || entry.stream.destroyed) {
-    this.add(entry.src)
-  }
+  return prom
+    .then(() => {
+      var entry = this.parseUrl(this._order[this._currentEntry])
 
-  entry.player = this._connection.playStream(entry.stream, streamOptions)
-  entry.player.on('end', () => {
-    entry.stream.destroy()
-    delete entry.stream
-    entry.player.destroy()
-    delete entry.player
-    entry.resolve()
-    this.next()
-  })
+      this.playing = true
+      if (!entry || !this._connection) { return }
+
+      if (entry.player) {
+        if (entry.player.paused) {
+          return entry.player.resume()
+        }
+        return
+      }
+
+      if (!entry.stream || entry.stream.destroyed) {
+        this.add(entry.src)
+      }
+
+      var fnPlay = function () {
+        entry.player = this._connection.playStream(entry.stream, streamOptions)
+        entry.player.on('end', () => {
+          entry.stream.destroy()
+          delete entry.stream
+          entry.player.destroy()
+          delete entry.player
+          entry.resolve()
+          delete entry.prom
+          this.next()
+        })
+      }.bind(this)
+
+      if (
+        entry.stream &&
+        typeof entry.stream.then === 'function'
+      ) {
+        entry.stream
+          .then((stream) => {
+            entry.stream = stream
+            fnPlay()
+          })
+      } else {
+        fnPlay()
+      }
+    })
 }
 
-Pl.prototype.stop = function () {
-  this.playing = false
-  this.next()
+Pl.prototype.stop = function (entry) {
+  if (this.stopping) { return Promise.resolve() }
+  entry = entry || this.parseUrl(this._order[this._currentEntry])
+  if (!entry) { return Promise.resolve() }
+  var prom = entry.prom
+  if (entry.player) {
+    this.stopping = true
+    entry.player.end()
+    prom = prom
+      .then(() => {
+        this.stopping = false
+      })
+  } else {
+    return Promise.resolve()
+  }
+  return prom
 }
 
 Pl.prototype.pause = function () {
@@ -233,6 +371,7 @@ Pl.prototype.pause = function () {
 Pl.prototype.addCmd = function (msg) {
   console.log(`Called "add" command by ${msg.author.username}`)
   var args = parse.args(msg.content)
+
   for (var i = 0; i < args.length; i++) {
     this.add(args[i])
   }

@@ -1,48 +1,56 @@
 'use strict'
 
-const configuration = require('../wooper.json')
-
 const Discord = require('discord.js')
-const client = new Discord.Client()
 
+const commands = require('./commands/main.js')
 const Playlist = require('./lib/playlist.js')
 
-const fetchFunction = function (msg) {
-  try {
-    var fnc = require('./commands/' + msg.channel.type)
-  } catch (e) { return } // Ignore commands that are unknown
-  var name = /!([^ ]*)/.exec(msg.content)
-  name = name && name[1]
-  if (name && fnc[name] && typeof fnc[name] === 'function') {
-    return fnc[name](msg)
-  }
+module.exports.create = function (configuration) {
+  // Create the discord client with woop context
+  const client = new Discord.Client()
+  client.__woop__ = configuration
+
+  // Attach to ready event to
+  client.on('ready', () => {
+    console.log(`Logged in as ${client.user.tag}!`)
+    console.log(`Can be invited using this url: https://discordapp.com/oauth2/authorize?client_id=${client.user.id}&scope=bot`)
+    if (configuration.guild && typeof configuration.guild === 'string') {
+      var defaultPlaylist = new Playlist(client, configuration.guild)
+      defaultPlaylist.init()
+    }
+  })
+
+  // Attach the wooper commands to the client
+  commands.attach(client)
+
+  // Attach to the error event to handle the client errors
+  client.on('error', err => {
+    console.error(err)
+  })
+
+  return client
 }
 
-client.on('ready', () => {
-  console.log(`Logged in as ${client.user.tag}!`)
-  console.log(`Can be invited using this url: https://discordapp.com/oauth2/authorize?client_id=${client.user.id}&scope=bot`)
-  if (configuration.guild && typeof configuration.guild === 'string') {
-    var defaultPlaylist = new Playlist(client, configuration.guild)
-    defaultPlaylist.init()
-      .then(() => {
-        console.log('Started playlist')
-      })
-  }
-})
+module.exports.login = function (client) {
+  // Ensure that the client is setup with the wooper context
+  if (!client.__woop__) { throw new Error('Failed to login, because this client is missing the wooper context.') }
 
-client.on('message', msg => {
-  // Ensure that the author is known and it is not a bot
-  if (!msg.author || msg.author.bot) { return }
+  // Login and logout user to ensure that the connection is reset
+  const tmpClient = new Discord.Client()
 
-  fetchFunction(msg)
-})
+  tmpClient.on('ready', function () {
+    tmpClient.destroy()
+  })
+  tmpClient.on('disconnect', function () {
+    client.login(client.__woop__.token)
+  })
 
-client.on('error', err => {
-  console.error(err)
-})
+  tmpClient.login(client.__woop__.token)
 
-// Login and logout user to ensure that the connection is reset
-const tmpClient = new Discord.Client()
-tmpClient.login(configuration.token)
-  .then(() => tmpClient.destroy())
-  .then(() => client.login(configuration.token))
+  return new Promise(resolve => client.on('ready', resolve))
+}
+
+if (process.mainModule === module) {
+  const client = module.exports.create(require('../wooper.json'))
+  module.exports.login(client)
+}
