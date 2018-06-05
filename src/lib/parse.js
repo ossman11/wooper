@@ -13,7 +13,7 @@ var args = function (str) {
     var cur = str[i]
 
     // Check if the current entry is closed
-    if (cur === wrap || (!wrap && cur === ' ')) {
+    if (cur === wrap || (!wrap && (cur === ' ' || cur === '\n'))) {
       subs.push(tmp)
       tmp = ''
       wrap = undefined

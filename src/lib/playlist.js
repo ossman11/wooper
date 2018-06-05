@@ -48,6 +48,7 @@ Pl.prototype.init = function () {
     })
     .then(messages => {
       messages.forEach(m => {
+        if (m.system) { return }
         if (m.author !== this._client.user) {
           if (m.deletable) {
             return m.delete()
@@ -173,7 +174,7 @@ Pl.prototype.editPlaylistMsg = function (msg, entries) {
 
   if (msg.content !== newContent) {
     return msg.edit(newContent)
-      .then(() => {
+      .then(msg => {
         if (this._lists[name] === this._currentList) {
           var entry = this.parseUrl(this._order[this._currentEntry])
           var entries = newContent.split('\n')
@@ -187,6 +188,7 @@ Pl.prototype.editPlaylistMsg = function (msg, entries) {
 
           this._order = entries
         }
+        return msg
       })
   }
   return Promise.resolve(msg)
@@ -214,6 +216,11 @@ Pl.prototype.playlist = function (name, srcmsg) {
     order: entries,
     msg: srcmsg ? this.editPlaylistMsg(srcmsg) : this._channel.send(['list: ' + name].concat(entries))
   }
+
+  if (srcmsg && srcmsg.pinned) {
+    this.start(name)
+  }
+
   return this._lists[name]
 }
 
@@ -221,14 +228,16 @@ Pl.prototype.add = function (url, listName) {
   var entry = this.parseUrl(url)
   if (!entry) { return }
   var list = this.playlist(listName)
-  return list.msg
+  list.msg = list.msg
     .then(msg => {
       var cont = msg.content.split('\n')
       if (cont.indexOf(entry.src) < 0) {
         cont.push(entry.src)
         return this.editPlaylistMsg(msg, cont)
       }
+      return msg
     })
+  return list.msg
 }
 
 Pl.prototype.remove = function (url, listName) {
@@ -236,16 +245,18 @@ Pl.prototype.remove = function (url, listName) {
   if (!entry) { return }
 
   var list = this.playlist(listName)
-  return list.msg
+  list.msg = list.msg
     .then(msg => {
       var entries = msg.content.split('\n')
       var i = entries.indexOf(entry.src)
       if (i > -1) {
         entries.splice(i, 1)
-        this.editPlaylistMsg(msg, entries)
+        return this.editPlaylistMsg(msg, entries)
       }
+      return msg
     })
-    .then(() => this.stop(entry))
+    .then(msg => this.stop(entry).then(() => msg))
+  return list.msg
 }
 
 Pl.prototype.next = function () {
@@ -284,6 +295,16 @@ Pl.prototype.start = function (listName) {
   if (this._currentList !== list) {
     prom = this.stop()
       .then(() => {
+        if (
+          this._currentList &&
+          this._currentList.msg &&
+          typeof this._currentList.msg.then === 'function'
+        ) {
+          return this._currentList.msg
+            .then(msg => msg.unpin())
+        }
+      })
+      .then(() => {
         this._currentList = list
         this._currentEntry = 0
         return list.msg
@@ -292,6 +313,7 @@ Pl.prototype.start = function (listName) {
         var entries = msg.content.split('\n')
         entries.shift()
         this._order = entries
+        msg.pin()
       })
   }
 
@@ -360,7 +382,7 @@ Pl.prototype.stop = function (entry) {
 }
 
 Pl.prototype.pause = function () {
-  var entry = this._order[0]
+  var entry = this.parseUrl(this._order[this._currentEntry])
   if (!entry || !this._connection || !entry.player) { return }
 
   entry.player.pause()
@@ -371,17 +393,27 @@ Pl.prototype.pause = function () {
 Pl.prototype.addCmd = function (msg) {
   console.log(`Called "add" command by ${msg.author.username}`)
   var args = parse.args(msg.content)
+  var list
+  if (!this.parseUrl(args[0])) {
+    list = args[0]
+  }
 
   for (var i = 0; i < args.length; i++) {
-    this.add(args[i])
+    this.add(args[i], list)
   }
 }
 
 Pl.prototype.removeCmd = function (msg) {
   console.log(`Called "remove" command by ${msg.author.username}`)
   var args = parse.args(msg.content)
+
+  var list
+  if (!this.parseUrl(args[0])) {
+    list = args[0]
+  }
+
   for (var i = 0; i < args.length; i++) {
-    this.remove(args[i])
+    this.remove(args[i], list)
   }
 }
 
@@ -392,7 +424,8 @@ Pl.prototype.skipCmd = function (msg) {
 
 Pl.prototype.startCmd = function (msg) {
   console.log(`Called "start" command by ${msg.author.username}`)
-  this.start()
+  var args = parse.args(msg.content)
+  this.start(args[0])
 }
 
 Pl.prototype.stopCmd = function (msg) {
@@ -406,7 +439,7 @@ Pl.prototype.pauseCmd = function (msg) {
 }
 
 Pl.prototype.pauzeCmd = Pl.prototype.pauseCmd
-Pl.prototype.resumeCmd = Pl.prototype.start
+Pl.prototype.resumeCmd = Pl.prototype.startCmd
 
 Pl.prototype.joinCmd = function (msg) {
   console.log(`Called "join" command by ${msg.author.username}`)
