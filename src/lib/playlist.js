@@ -1,6 +1,6 @@
 'use strict'
 
-// const spot = require('./spotify.js')
+const Spotify = require('./spotify.js')
 const ytdl = require('ytdl-core')
 const parse = require('./parse.js')
 
@@ -72,11 +72,9 @@ Pl.prototype.prepareServices = function () {
         }
       }
     })
-  /*
-  // Setup spotify
-  .then(() => spot.create(this._client.__woop__.cred.spotify))
-  .then(spot => { this._services.spotify = spot })
-  */
+
+    // Setup spotify
+    .then(() => { this._services.spotify = new Spotify(this._client.__woop__.cred.spotify) })
 }
 
 Pl.prototype.handleMessage = function (msg) {
@@ -95,20 +93,29 @@ Pl.prototype.handleMessage = function (msg) {
 }
 
 const checks = [
+  // Youtube
   {
     type: 'youtube',
     extract: /https?:\/\/www\.youtube\.com\/.*\?.*&?v=([^&\s]*)/,
-    src: 'https://youtu.be/{id}'
+    src: 'https://youtu.be/{0}'
   },
   {
     type: 'youtube',
     extract: /https?:\/\/youtu\.be\/([^?&\s]*)/,
-    src: 'https://youtu.be/{id}'
+    src: 'https://youtu.be/{0}'
   },
+  // Spotify
   {
     type: 'spotify',
     extract: /spotify:track:(.*)/,
-    src: 'spotify:track:{id}'
+    src: 'spotify:track:{0}',
+    convert: true
+  },
+  {
+    type: 'spotify',
+    extract: /https?:\/\/open\.spotify\.com\/user\/([^/]*)\/playlist\/([^/]*)/,
+    src: 'spotify:user:{0}:playlist:{1}',
+    convert: true
   }
 ]
 Pl.prototype.validateUrl = function (src) {
@@ -131,19 +138,28 @@ Pl.prototype.parseUrl = function (src) {
 
   this._entries[target.type] = this._entries[target.type] || {}
 
-  var id = target.extract.exec(src)
-  id = id && id[1]
+  var extract = target.extract.exec(src)
+  extract.shift()
+  var id = extract.join('_')
 
   this._entries[target.type][id] = this._entries[target.type][id] || {}
   var entry = this._entries[target.type][id]
-  entry.src = target.src && target.src.replace('{id}', id)
+  entry.src = target.src && target.src.replace(/{(\d*)}/g, (a, b) => extract[b])
   entry.type = target.type
   entry.prom = entry.prom || new Promise((resolve, reject) => {
     entry.resolve = resolve
     entry.reject = reject
   })
+  entry.convert = target.convert || false
 
-  if (this._services[entry.type]) {
+  if (target.convert) {
+    entry.convertProm = entry.convertProm || this._services[entry.type].convert(entry.src)
+  }
+
+  if (
+    this._services[entry.type] &&
+    typeof this._services[entry.type].create === 'function'
+  ) {
     entry.stream = this._services[entry.type].create(entry.src)
   }
 
@@ -230,6 +246,20 @@ Pl.prototype.playlist = function (name, srcmsg) {
 Pl.prototype.add = function (url, listName) {
   var entry = this.parseUrl(url)
   if (!entry) { return }
+
+  if (entry.convert) {
+    return entry.convertProm
+      .then(results => {
+        if (!Array.isArray(results)) { results = [results] }
+        for (var i = 0; i < results.length; i++) {
+          var cur = results[i]
+          if (cur) {
+            this.add(cur.src || cur, listName)
+          }
+        }
+      })
+  }
+
   var list = this.playlist(listName)
   list.msg = list.msg
     .then(msg => {
@@ -246,6 +276,19 @@ Pl.prototype.add = function (url, listName) {
 Pl.prototype.remove = function (url, listName) {
   var entry = this.parseUrl(url)
   if (!entry) { return }
+
+  if (entry.convert) {
+    return entry.convertProm
+      .then(results => {
+        if (!Array.isArray(results)) { results = [results] }
+        for (var i = 0; i < results.length; i++) {
+          var cur = results[i]
+          if (cur) {
+            this.remove(cur.src || cur, listName)
+          }
+        }
+      })
+  }
 
   var list = this.playlist(listName)
   list.msg = list.msg
